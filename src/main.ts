@@ -1,34 +1,144 @@
-/**
- * Some predefined delay values (in milliseconds).
- */
-export enum Delays {
-  Short = 500,
-  Medium = 2000,
-  Long = 5000,
+import { google } from 'googleapis';
+import { OAuth2Client } from 'google-auth-library';
+import { readFile, writeFile } from 'fs/promises';
+import { createInterface } from 'readline';
+
+const SCOPES = ['https://www.googleapis.com/auth/calendar'];
+const TOKEN_PATH = 'token.json';
+const CREDENTIALS_PATH = 'google_credentials.json';
+
+interface Credentials {
+  installed: {
+    client_id: string;
+    client_secret: string;
+    redirect_uris: string[];
+  };
 }
 
-/**
- * Returns a Promise<string> that resolves after a given time.
- *
- * @param {string} name - A name.
- * @param {number=} [delay=Delays.Medium] - A number of milliseconds to delay resolution of the Promise.
- * @returns {Promise<string>}
- */
-function delayedHello(
-  name: string,
-  delay: number = Delays.Medium,
-): Promise<string> {
-  return new Promise((resolve: (value?: string) => void) =>
-    setTimeout(() => resolve(`Hello, ${name}`), delay),
+async function loadCredentials(): Promise<Credentials> {
+  const content = await readFile(CREDENTIALS_PATH, 'utf-8');
+  return JSON.parse(content) as Credentials;
+}
+
+async function getAccessToken(oAuth2Client: OAuth2Client): Promise<void> {
+  const authUrl = oAuth2Client.generateAuthUrl({
+    access_type: 'offline',
+    scope: SCOPES,
+  });
+
+  console.log('Authorize this app by visiting this URL:');
+  console.log(authUrl);
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve, reject) => {
+    rl.question('Enter the code from that page here: ', async (code) => {
+      rl.close();
+      try {
+        const { tokens } = await oAuth2Client.getToken(code);
+        oAuth2Client.setCredentials(tokens);
+
+        await writeFile(TOKEN_PATH, JSON.stringify(tokens));
+        console.log('Token stored to', TOKEN_PATH);
+        resolve();
+      } catch (err) {
+        console.error('Error retrieving access token', err);
+        reject(err);
+      }
+    });
+  });
+}
+
+async function authorize(): Promise<OAuth2Client> {
+  const credentials = await loadCredentials();
+  const { client_secret, client_id, redirect_uris } = credentials.installed;
+
+  const oAuth2Client = new google.auth.OAuth2(
+    client_id,
+    client_secret,
+    redirect_uris[0]
   );
+
+  try {
+    const token = await readFile(TOKEN_PATH, 'utf-8');
+    oAuth2Client.setCredentials(JSON.parse(token));
+    console.log('Using existing token');
+  } catch {
+    console.log('No existing token found, requesting new authorization...');
+    await getAccessToken(oAuth2Client);
+  }
+
+  return oAuth2Client;
 }
 
-// Please see the comment in the .eslintrc.json file about the suppressed rule!
-// Below is an example of how to use ESLint errors suppression. You can read more
-// at https://eslint.org/docs/latest/user-guide/configuring/rules#disabling-rules
+async function listCalendars(auth: OAuth2Client): Promise<void> {
+  const calendar = google.calendar({ version: 'v3', auth });
 
-// eslint-disable-next-line @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-explicit-any
-export async function greeter(name: any) {
-  // The name parameter should be of type string. Any is used only to trigger the rule.
-  return await delayedHello(name, Delays.Long);
+  try {
+    const response = await calendar.calendarList.list();
+    const calendars = response.data.items;
+
+    if (!calendars || calendars.length === 0) {
+      console.log('No calendars found.');
+      return;
+    }
+
+    console.log('\nCalendars:');
+    calendars.forEach((cal) => {
+      console.log(`- ${cal.summary} (ID: ${cal.id})`);
+    });
+  } catch (error) {
+    console.error('Error fetching calendars:', error);
+  }
 }
+
+async function getEvents(
+  auth: OAuth2Client,
+  calendarId: string,
+  startDate: Date,
+  endDate: Date
+): Promise<void> {
+  const calendar = google.calendar({ version: 'v3', auth });
+
+  try {
+    const response = await calendar.events.list({
+      calendarId,
+      timeMin: startDate.toISOString(),
+      timeMax: endDate.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+    });
+
+    const events = response.data.items;
+
+    if (!events || events.length === 0) {
+      console.log('\nNo events found in the specified date range.');
+      return;
+    }
+
+    console.log(`\nEvents from ${startDate.toLocaleDateString()} to ${endDate.toLocaleDateString()}:`);
+    events.forEach((event) => {
+      const start = event.start?.dateTime || event.start?.date;
+      console.log(`- ${start}: ${event.summary}`);
+    });
+  } catch (error) {
+    console.error('Error fetching events:', error);
+  }
+}
+
+export async function run(): Promise<void> {
+  try {
+    const auth = await authorize();
+    console.log('Successfully authenticated with Google Calendar API!');
+
+    // List calendars if token exists
+    await listCalendars(auth);
+  } catch (error) {
+    console.error('Error during authentication:', error);
+  }
+}
+
+run();
