@@ -23,7 +23,7 @@ function SelectTool(messages: Message[]) -> GCalListCalendars | GCalGetEvents | 
   client "Generic"
   prompt #"
     Today is December 13th, 2025
-    You are a helpful assistant that can select tools based on the need.
+    You are a helpful assistant that can select tools based on the user's need in order to answer the user's question or respond to their messages.
 
     The conversation thus far is:
     {% for message in messages %}
